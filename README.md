@@ -1,15 +1,16 @@
 # sqlchatcli
 
-A command-line chat interface for querying a SQLite database in plain English. You ask a question, an LLM translates it into SQL, you approve the query before it runs, and the results are printed as a table — the actual row data is never sent to the LLM.
+A command-line chat interface for querying a SQLite database in plain English. You ask a question, an AI agent generates SQL via a tool call with Zod schema validation, asks you to approve the query before execution, and reports the results as a table.
 
 ## How it works
 
 1. You type a question at the `Chat >` prompt.
-2. A data dictionary describing your schema (the `knowledge_table`, see [Database](#database) below) plus your question are sent to an LLM, which returns a raw SQL query ([prompt.js](prompt.js)).
-3. The proposed query is printed and you're asked to confirm before it executes — a human-in-the-loop safety check ([index.js](index.js)).
-4. On confirmation, the query runs against the local SQLite database via [`better-sqlite3`](https://github.com/WiseLibs/better-sqlite3) ([data_db.js](data_db.js)), and the results are printed directly as a table. Row data never leaves your machine or gets sent to the LLM.
+2. An AI agent powered by Vercel AI SDK (`ai`) is provided schema context from the `knowledge_table` ([knowledge_db.js](knowledge_db.js)).
+3. The agent calls the `generateSql` tool (defined with Zod parameters) to propose a SQL query ([prompt.js](prompt.js)).
+4. The tool execution presents the proposed query and requests human-in-the-loop confirmation before running against local SQLite ([data_db.js](data_db.js)).
+5. On approval, the query results are printed directly as a table and summarized by the agent.
 
-The LLM backend is provider-agnostic: it talks to any OpenAI-compatible `/v1` endpoint, so it works with a local model server (Ollama, LM Studio) or Google's Gemini OpenAI-compatible endpoint ([aiclient.js](aiclient.js)).
+The LLM backend is provider-agnostic via Vercel AI SDK: it connects to local OpenAI-compatible servers (Ollama, LM Studio) or Google Gemini API ([aiclient.js](aiclient.js)).
 
 ## Requirements
 
@@ -51,47 +52,35 @@ The LLM backend is provider-agnostic: it talks to any OpenAI-compatible `/v1` en
 ```
 🤖 Data Chat CLI initialized. Type "exit" or "q" to quit.
 
-Chat > which customers placed an order in the last 30 days?
+Chat > which products are discontinued?
 
 Thinking...
 
 Proposed SQL Query:
-"SELECT name FROM customers WHERE last_order_date >= date('now', '-30 days');"
+"SELECT product_name FROM products WHERE discontinued_date <= date('now');"
 
 ? Do you want to execute this query against your database? (Y/n)
 
 Executing query...
 
-┌─────────┬──────────────────┐
-│ (index) │       name       │
-├─────────┼──────────────────┤
-│    0    │  'Ipsum'         │
-│    1    │  'Lore'          │
-└─────────┴──────────────────┘
+┌─────────┬────────────────────────────┐
+│ (index) │        product_name        │
+├─────────┼────────────────────────────┤
+│    0    │  'Ceramic Coffee Mug'      │
+└─────────┴────────────────────────────┘
+
+🤖 The discontinued product in the warehouse database is the Ceramic Coffee Mug.
 ```
 
 Type `exit` or `q` to quit.
 
 ## Database
 
-The app reads and writes a local SQLite file, `app.db`, which is gitignored — it's never committed, so each environment brings its own data.
+The app reads and writes a local SQLite file (`app.db`), which is gitignored — it's never committed, so each environment brings its own data.
 
-To set the project up against your own data:
-
-1. **Create/point at a SQLite database.** [data_db.js](data_db.js) opens `app.db` in the project root via `better-sqlite3`; either let it create an empty file on first run and add your own `CREATE TABLE` statements there, or point it at an existing SQLite file.
-2. **Add a `knowledge_table`.** This is a data dictionary the LLM queries for schema context instead of raw table introspection — one row per column, describing what it means:
-
-   ```sql
-   CREATE TABLE knowledge_table (
-     table_name  TEXT NOT NULL,
-     column_name TEXT,
-     data_type   TEXT,
-     description TEXT
-   );
-   ```
-
-   Populate it with one row per table/column. Descriptions can include units, valid values, and gotchas (e.g. "status is an enum: 0=pending, 1=shipped, 2=cancelled") — the more context you give, the more accurate the generated SQL will be. `getKnowledgeTable()` in [knowledge_db.js](knowledge_db.js) reads this table and passes it to the LLM on every question.
-3. **Seed your data tables** however suits your project (SQL scripts, a migration tool, `INSERT` statements in `data_db.js`, etc.). Since `app.db` isn't committed, keep any seed/schema scripts you want to share in version control separately from the database file itself.
+1. **Create/point at a SQLite database.** [data_db.js](data_db.js) opens `app.db` in the project root via `better-sqlite3`.
+2. **Add a `knowledge_table`.** A data dictionary describing the schema for the agent ([knowledge_db.js](knowledge_db.js)).
+3. **Seed your data tables** ([seed_knowledge_db.js](seed_knowledge_db.js)).
 
 ## Project structure
 
@@ -100,11 +89,13 @@ To set the project up against your own data:
 | `index.js` | CLI entry point and main chat loop |
 | `data_db.js` | SQLite connection, data-table (products/stock_movements) schema and seeding |
 | `knowledge_db.js` | Knowledge-table schema, seeding, and schema introspection for the LLM |
-| `aiclient.js` | OpenAI-compatible LLM client factory |
-| `prompt.js` | Prompt template for SQL generation |
+| `seed_knowledge_db.js` | Seeding script for knowledge_table schema |
+| `aiclient.js` | Vercel AI SDK client factory supporting OpenAI & Google Gemini |
+| `prompt.js` | AI Agent definition and `generateSql` tool using Zod schema |
 
 ## Notes
 
 - SQL queries proposed by the LLM are shown to you and require explicit confirmation before execution — always review a query before approving it, especially destructive statements (`UPDATE`, `DELETE`, `DROP`).
 - `app.db` is gitignored; it holds your actual data and is never committed.
 - `.env` is gitignored; never commit real API keys.
+
